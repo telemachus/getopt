@@ -42,7 +42,7 @@
 //
 // This package also defines a FlagSet wrapping the standard flag.FlagSet.
 //
-// Caveat
+// # Caveat
 //
 // In general Go flag parsing is preferred for new programs, because
 // it is not as pedantic about the number of dashes used to invoke
@@ -51,7 +51,7 @@
 // where, for legacy reasons, it is important to use exactly getopt(3)
 // syntax, such as when rewriting in Go an existing tool that already
 // uses getopt(3).
-package getopt // import "rsc.io/getopt"
+package getopt
 
 import (
 	"flag"
@@ -63,21 +63,6 @@ import (
 	"unicode/utf8"
 )
 
-func init() {
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-		PrintDefaults() // ours not package flag's
-	}
-
-	CommandLine.FlagSet = flag.CommandLine
-	CommandLine.name = os.Args[0]
-	CommandLine.errorHandling = flag.ExitOnError
-	CommandLine.outw = os.Stderr
-	CommandLine.Usage = func() { flag.Usage() }
-}
-
-var CommandLine FlagSet
-
 // A FlagSet is a set of defined flags.
 // It wraps and provides the same interface as flag.FlagSet
 // but parses command line arguments using getopt syntax.
@@ -86,13 +71,13 @@ var CommandLine FlagSet
 // by package getopt; FlagSet also provides all the methods
 // of the embedded flag.FlagSet, like Bool, Int, NArg, and so on.
 type FlagSet struct {
+	outw io.Writer
 	*flag.FlagSet
 
 	alias         map[string]string
 	unalias       map[string]string
 	name          string
 	errorHandling flag.ErrorHandling
-	outw          io.Writer
 }
 
 func (f *FlagSet) out() io.Writer {
@@ -117,7 +102,7 @@ func NewFlagSet(name string, errorHandling flag.ErrorHandling) *FlagSet {
 	return f
 }
 
-// Init sets the name and error handling proprety for a flag set.
+// Init sets the name and error handling property for a flag set.
 func (f *FlagSet) Init(name string, errorHandling flag.ErrorHandling) {
 	if f.FlagSet == nil {
 		f.FlagSet = new(flag.FlagSet)
@@ -146,19 +131,6 @@ func (f *FlagSet) Lookup(name string) *flag.Flag {
 		name = x
 	}
 	return f.FlagSet.Lookup(name)
-}
-
-// Alias introduces an alias for an existing flag name.
-// The short name must be a single letter, and the long name must be multiple letters.
-// Exactly one name must be defined as a flag already: the undefined name is introduced
-// as an alias for the defined name.
-// Alias panics if both names are already defined or if both are undefined.
-//
-// For example, if a flag named "v" is already defined using package flag,
-// then it is available as -v (or --v). Calling Alias("v", "verbose") makes the same
-// flag also available as --verbose.
-func Alias(short, long string) {
-	CommandLine.Alias(short, long)
 }
 
 // Alias introduces an alias for an existing flag name.
@@ -203,13 +175,6 @@ func (f *FlagSet) Alias(short, long string) {
 // Aliases introduces zero or more aliases. The argument list must consist of an
 // even number of strings making up a sequence of short, long pairs to be passed
 // to Alias.
-func Aliases(list ...string) {
-	CommandLine.Aliases(list...)
-}
-
-// Aliases introduces zero or more aliases. The argument list must consist of an
-// even number of strings making up a sequence of short, long pairs to be passed
-// to Alias.
 func (f *FlagSet) Aliases(list ...string) {
 	if len(list)%2 != 0 {
 		panic("getopt: Aliases not invoked with pairs")
@@ -223,7 +188,7 @@ type boolFlag interface {
 	IsBoolFlag() bool
 }
 
-func (f *FlagSet) failf(format string, args ...interface{}) error {
+func (f *FlagSet) failf(format string, args ...any) error {
 	err := fmt.Errorf(format, args...)
 	fmt.Fprintln(f.out(), err)
 	f.Usage()
@@ -240,16 +205,12 @@ func (f *FlagSet) defaultUsage() {
 	f.PrintDefaults()
 }
 
-// Parse parses the command-line flags from os.Args[1:].
-func Parse() {
-	CommandLine.Parse(os.Args[1:])
-}
-
 // Parse parses flag definitions from the argument list,
 // which should not include the command name.
 // Parse must be called after all flags and aliases in the FlagSet are defined
 // and before flags are accessed by the program.
-// The return value will be flag.ErrHelp if -h or --help were used but not defined.
+//
+//nolint:cyclop // This method is necessarily complex.
 func (f *FlagSet) Parse(args []string) error {
 	for len(args) > 0 {
 		arg := args[0]
@@ -265,15 +226,13 @@ func (f *FlagSet) Parse(args []string) error {
 			name := arg[2:]
 			value := ""
 			haveValue := false
-			if i := strings.Index(name, "="); i >= 0 {
-				name, value = name[:i], name[i+1:]
+			if n, v, ok := strings.Cut(name, "="); ok {
+				name = n
+				value = v
 				haveValue = true
 			}
 			fg := f.Lookup(name)
 			if fg == nil {
-				if name == "h" || name == "help" {
-					// TODO ErrHelp
-				}
 				return f.failf("flag provided but not defined: --%s", name)
 			}
 			if b, ok := fg.Value.(boolFlag); ok && b.IsBoolFlag() {
@@ -310,9 +269,6 @@ func (f *FlagSet) Parse(args []string) error {
 			arg = arg[size:]
 			fg := f.Lookup(name)
 			if fg == nil {
-				if name == "h" {
-					// TODO ErrHelp
-				}
 				return f.failf("flag provided but not defined: -%s", name)
 			}
 			if b, ok := fg.Value.(boolFlag); ok && b.IsBoolFlag() {
@@ -335,15 +291,12 @@ func (f *FlagSet) Parse(args []string) error {
 	}
 
 	// Arrange for flag.NArg, flag.Args, etc to work properly.
-	f.FlagSet.Parse(append([]string{"--"}, args...))
-	return nil
-}
+	if err := f.FlagSet.Parse(append([]string{"--"}, args...)); err != nil {
+		// An error here should be impossible. Panic if we receive one.
+		panic(`f.FlagSet.Parse(append([]string{"--"}, args...))`)
+	}
 
-// PrintDefaults is like flag.PrintDefaults but includes information
-// about short/long alias pairs and prints the correct syntax for
-// long flags.
-func PrintDefaults() {
-	CommandLine.PrintDefaults()
+	return nil
 }
 
 // PrintDefaults is like flag.PrintDefaults but includes information
@@ -369,7 +322,7 @@ func (f *FlagSet) PrintDefaults() {
 			s = fmt.Sprintf("  --%s", long) // Two spaces before -; see next two comments.
 		}
 		name, usage := flag.UnquoteUsage(fg)
-		if len(name) > 0 {
+		if name != "" {
 			s += " " + name
 		}
 
@@ -408,6 +361,7 @@ func isZeroValue(f *flag.Flag, value string) bool {
 	} else {
 		z = reflect.Zero(typ)
 	}
+	//nolint:errcheck // I will replace this entire method soon.
 	if value == z.Interface().(flag.Value).String() {
 		return true
 	}

@@ -1,4 +1,5 @@
 // Copyright 2017 The Go Authors. All rights reserved.
+// Copyright 2024 Peter Aronoff. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -6,13 +7,12 @@ package getopt
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"strings"
 	"testing"
 )
-
-// TODO: Real tests.
 
 type testFlagSet struct {
 	A    *bool
@@ -22,11 +22,9 @@ type testFlagSet struct {
 	I    *int
 	Long *int
 	S    *string
-	Args []string
-
-	t    *testing.T
-	buf  bytes.Buffer
 	flag *FlagSet
+	Args []string
+	buf  bytes.Buffer
 }
 
 func (tf *testFlagSet) str() string {
@@ -61,8 +59,8 @@ func (tf *testFlagSet) str() string {
 	return out[1:]
 }
 
-func newTestFlagSet(t *testing.T) *testFlagSet {
-	tf := &testFlagSet{t: t, flag: NewFlagSet("x", flag.ContinueOnError)}
+func newTestFlagSet() *testFlagSet {
+	tf := &testFlagSet{flag: NewFlagSet("x", flag.ContinueOnError)}
 	f := tf.flag
 	f.SetOutput(&tf.buf)
 	tf.A = f.Bool("a", false, "desc of a")
@@ -80,52 +78,68 @@ func newTestFlagSet(t *testing.T) *testFlagSet {
 	return tf
 }
 
-var tests = []struct {
-	cmd string
-	out string
-}{
-	{"-i 1", "-i 1"},
-	{"--india 1", "-i 1"},
-	{"--india=1", "-i 1"},
-	{"-i=1", `ERR: invalid value "=1" for flag -i: strconv.ParseInt: parsing "=1": invalid syntax`},
-	{"--i=1", "-i 1"},
-	{"-abc", "-a -b -c"},
-	{"--abc", `ERR: flag provided but not defined: --abc`},
-	{"-sfoo", "-s foo"},
-	{"-s foo", "-s foo"},
-	{"--s=foo", "-s foo"},
-	{"-s=foo", "-s =foo"},
-	{"-s", `ERR: missing argument for -s`},
-	{"--s", `ERR: missing argument for --s`},
-	{"--s=", ``},
-	{"-sfooi1 -i2", "-i 2 -s fooi1"},
-	{"-absfoo", "-a -b -s foo"},
-	{"-i1 -- arg", "-i 1 arg"},
-	{"-i1 - arg", "-i 1 - arg"},
-	{"-i1 --- arg", `ERR: flag provided but not defined: ---`},
-	{"-i1 arg", "-i 1 arg"},
-	{"--aah --charlie --beeta --sierra=123", "-a -b -c -s 123"},
-	{"-i1 --long=2", "-i 1 --long 2"},
-}
+func TestParse(t *testing.T) {
+	tests := []struct {
+		cmd string
+		out string
+	}{
+		{"-i 1", "-i 1"},
+		{"--india 1", "-i 1"},
+		{"--india=1", "-i 1"},
+		{"--i=1", "-i 1"},
+		{"-abc", "-a -b -c"},
+		{"-sfoo", "-s foo"},
+		{"-s foo", "-s foo"},
+		{"--s=foo", "-s foo"},
+		{"-s=foo", "-s =foo"},
+		{"--s=", ``},
+		{"-sfooi1 -i2", "-i 2 -s fooi1"},
+		{"-absfoo", "-a -b -s foo"},
+		{"-i1 -- arg", "-i 1 arg"},
+		{"-i1 - arg", "-i 1 - arg"},
+		{"-i1 arg", "-i 1 arg"},
+		{"--aah --charlie --beeta --sierra=123", "-a -b -c -s 123"},
+		{"-i1 --long=2", "-i 1 --long 2"},
+	}
 
-func TestBasic(t *testing.T) {
 	for _, tt := range tests {
-		tf := newTestFlagSet(t)
+		tf := newTestFlagSet()
 		err := tf.flag.Parse(strings.Fields(tt.cmd))
 		var out string
 		if err != nil {
-			out = "ERR: " + err.Error()
-		} else {
-			tf.Args = tf.flag.Args()
-			out = tf.str()
+			t.Errorf("%s:\nhave %v\nwant <nil>\n", tt.cmd, err)
 		}
+		tf.Args = tf.flag.Args()
+		out = tf.str()
 		if out != tt.out {
 			t.Errorf("%s:\nhave %s\nwant %s", tt.cmd, out, tt.out)
 		}
 	}
 }
 
-var wantHelpText = `  -a, --aah
+func TestParseErr(t *testing.T) {
+	tests := []struct {
+		err error
+		cmd string
+	}{
+		{cmd: "-i=1", err: errors.New("parse error")},
+		{cmd: "--abc", err: errors.New("parse error")},
+		{cmd: "-s", err: errors.New("parse error")},
+		{cmd: "--s", err: errors.New("parse error")},
+		{cmd: "-i1 --- arg", err: errors.New("parse error")},
+	}
+
+	for _, tt := range tests {
+		tf := newTestFlagSet()
+		err := tf.flag.Parse(strings.Fields(tt.cmd))
+		if err == nil {
+			t.Errorf("%s:\nhave <nil>\nwant error\n", tt.cmd)
+		}
+	}
+}
+
+func TestHelpText(t *testing.T) {
+	wantHelpText := `  -a, --aah
     	desc of a
   -b, --beeta
     	desc of b
@@ -139,9 +153,7 @@ var wantHelpText = `  -a, --aah
   -s, --sierra string
     	string
 `
-
-func TestHelpText(t *testing.T) {
-	tf := newTestFlagSet(t)
+	tf := newTestFlagSet()
 	tf.flag.PrintDefaults()
 	out := tf.buf.String()
 	if out != wantHelpText {
